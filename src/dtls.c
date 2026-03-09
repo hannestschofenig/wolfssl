@@ -1251,6 +1251,75 @@ int TLSX_ConnectionID_Use(WOLFSSL* ssl)
     return 0;
 }
 
+#ifdef WOLFSSL_DTLS_CID_RRC
+int TLSX_RRC_Use(WOLFSSL* ssl)
+{
+    TLSX* ext;
+
+    ext = TLSX_Find(ssl->extensions, TLSX_RRC);
+    if (ext != NULL)
+        return 0;
+
+    return TLSX_Push(&ssl->extensions, TLSX_RRC, NULL, ssl->heap);
+}
+
+int TLSX_RRC_Parse(WOLFSSL* ssl, const byte* input, word16 length,
+    byte isRequest)
+{
+    TLSX* ext;
+
+    (void)input;
+
+    if (length != 0)
+        return BUFFER_ERROR;
+
+    if (!ssl->options.useDtlsCIDRRC) {
+        if (isRequest) {
+            WOLFSSL_MSG("Received RRC ext but it's not enabled, ignoring");
+            return 0;
+        }
+        WOLFSSL_MSG("RRC ext not requested by the Client, aborting");
+        return UNSUPPORTED_EXTENSION;
+    }
+
+    ext = TLSX_Find(ssl->extensions, TLSX_RRC);
+    if (ext == NULL) {
+        if (isRequest) {
+            WOLFSSL_MSG("Received RRC ext but it's not enabled, ignoring");
+            return 0;
+        }
+        WOLFSSL_MSG("RRC ext not requested by the Client, aborting");
+        return UNSUPPORTED_EXTENSION;
+    }
+
+    ssl->options.dtlsCidRrcNegotiated = 1;
+    if (isRequest)
+        ext->resp = 1;
+
+    return 0;
+}
+
+void DtlsRRCOnExtensionsParsed(WOLFSSL* ssl)
+{
+    CIDInfo* cidInfo;
+
+    if (!ssl->options.useDtlsCIDRRC)
+        return;
+
+    if (!ssl->options.useDtlsCID) {
+        TLSX_Remove(&ssl->extensions, TLSX_RRC, ssl->heap);
+        ssl->options.dtlsCidRrcNegotiated = 0;
+        return;
+    }
+
+    cidInfo = DtlsCidGetInfo(ssl);
+    if (cidInfo == NULL || !cidInfo->negotiated) {
+        TLSX_Remove(&ssl->extensions, TLSX_RRC, ssl->heap);
+        ssl->options.dtlsCidRrcNegotiated = 0;
+    }
+}
+#endif /* WOLFSSL_DTLS_CID_RRC */
+
 int TLSX_ConnectionID_Parse(WOLFSSL* ssl, const byte* input, word16 length,
     byte isRequest)
 {
@@ -1351,6 +1420,30 @@ int wolfSSL_dtls_cid_use(WOLFSSL* ssl)
         return ret;
     return WOLFSSL_SUCCESS;
 }
+
+#ifdef WOLFSSL_DTLS_CID_RRC
+int wolfSSL_dtls_cid_rrc_use(WOLFSSL* ssl)
+{
+    int ret;
+
+    ret = wolfSSL_dtls_cid_use(ssl);
+    if (ret != WOLFSSL_SUCCESS)
+        return ret;
+
+    ssl->options.useDtlsCIDRRC = 1;
+    ret = TLSX_RRC_Use(ssl);
+    if (ret != 0)
+        return ret;
+    return WOLFSSL_SUCCESS;
+}
+
+int wolfSSL_dtls_cid_rrc_is_enabled(WOLFSSL* ssl)
+{
+    if (ssl == NULL)
+        return 0;
+    return ssl->options.dtlsCidRrcNegotiated == 1;
+}
+#endif /* WOLFSSL_DTLS_CID_RRC */
 
 int wolfSSL_dtls_cid_is_enabled(WOLFSSL* ssl)
 {

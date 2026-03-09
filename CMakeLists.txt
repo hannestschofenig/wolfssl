@@ -427,6 +427,18 @@ if(WOLFSSL_DTLS_CID)
     list(APPEND WOLFSSL_DEFINITIONS "-DWOLFSSL_DTLS_CID")
 endif()
 
+# DTLS CID Return Routability Check support
+add_option("WOLFSSL_DTLS_CID_RRC"
+    "Enables wolfSSL DTLS CID Return Routability Check (default: disabled)"
+    "no" "yes;no")
+
+if(WOLFSSL_DTLS_CID_RRC)
+    if(NOT WOLFSSL_DTLS_CID)
+        message(FATAL_ERROR "WOLFSSL_DTLS_CID_RRC requires WOLFSSL_DTLS_CID")
+    endif()
+    list(APPEND WOLFSSL_DEFINITIONS "-DWOLFSSL_DTLS_CID_RRC")
+endif()
+
 # DTLS 1.3 Fragment ClientHello
 add_option("WOLFSSL_DTLS_CH_FRAG"
     "Enable wolfSSL DTLS 1.3 Fragment ClientHello (default: disabled)"
@@ -2728,6 +2740,15 @@ if(WOLFSSL_EXAMPLES)
     target_link_libraries(client wolfssl)
     target_compile_definitions(client PRIVATE ${WOLFSSL_DEFINITIONS})
     set_property(TARGET client
+                 PROPERTY RUNTIME_OUTPUT_DIRECTORY
+                 ${WOLFSSL_OUTPUT_BASE}/examples/client)
+
+    # Build DTLS RRC client example
+    add_executable(dtls_rrc_client
+        ${CMAKE_CURRENT_SOURCE_DIR}/examples/client/dtls_rrc_client.c)
+    target_link_libraries(dtls_rrc_client wolfssl)
+    target_compile_definitions(dtls_rrc_client PRIVATE ${WOLFSSL_DEFINITIONS})
+    set_property(TARGET dtls_rrc_client
                  PROPERTY RUNTIME_OUTPUT_DIRECTORY
                  ${WOLFSSL_OUTPUT_BASE}/examples/client)
 

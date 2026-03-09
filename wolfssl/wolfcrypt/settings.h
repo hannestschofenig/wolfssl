@@ -4526,6 +4526,10 @@ extern void uITRON4_free(void *p) ;
     #error The SRTP extension requires DTLS
 #endif
 
+#if defined(WOLFSSL_DTLS_CID_RRC) && !defined(WOLFSSL_DTLS_CID)
+    #error WOLFSSL_DTLS_CID_RRC requires WOLFSSL_DTLS_CID
+#endif
+
 /* FIPS v5 and older doesn't support WOLF_PRIVATE_KEY_ID with PK callbacks */
 #if defined(HAVE_FIPS) && FIPS_VERSION_LT(5,3) && defined(HAVE_PK_CALLBACKS)
     #define NO_WOLF_PRIVATE_KEY_ID

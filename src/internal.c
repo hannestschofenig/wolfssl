@@ -12155,6 +12155,9 @@ static int GetRecordHeader(WOLFSSL* ssl, word32* inOutIdx,
 #ifdef WOLFSSL_DTLS_CID
         needsEnc = needsEnc || rh->type == dtls12_cid;
 #endif
+#ifdef WOLFSSL_DTLS_CID_RRC
+        needsEnc = needsEnc || rh->type == return_routability_check;
+#endif
         if (!_DtlsCheckWindow(ssl) ||
                 (needsEnc && ssl->keys.curEpoch == 0) ||
                 (rh->type == alert && ssl->options.handShakeDone &&
@@ -12253,6 +12256,9 @@ static int GetRecordHeader(WOLFSSL* ssl, word32* inOutIdx,
         case alert:
 #if defined(WOLFSSL_DTLS) && defined(WOLFSSL_DTLS_CID)
         case dtls12_cid:
+#endif
+#ifdef WOLFSSL_DTLS_CID_RRC
+        case return_routability_check:
 #endif
 #ifdef WOLFSSL_DTLS13
         case ack:
@@ -22462,6 +22468,51 @@ static void dtlsProcessPendingPeer(WOLFSSL* ssl, int deprotected)
     }
 }
 #endif
+
+#ifdef WOLFSSL_DTLS_CID_RRC
+#define WOLFSSL_RRC_MSG_PATH_CHALLENGE 0
+#define WOLFSSL_RRC_MSG_PATH_RESPONSE  1
+#define WOLFSSL_RRC_MSG_LEN            9
+
+static int SendRrcPathResponse(WOLFSSL* ssl, const byte* cookie)
+{
+    byte input[WOLFSSL_RRC_MSG_LEN];
+    byte* output;
+    int ret;
+    int sendSz;
+    int outputSz;
+    int dtlsExtra = 0;
+
+    if (!IsEncryptionOn(ssl, 1))
+        return BAD_STATE_E;
+
+#ifdef WOLFSSL_DTLS
+    if (ssl->options.dtls)
+        dtlsExtra = DTLS_RECORD_EXTRA;
+#endif
+
+    outputSz = WOLFSSL_RRC_MSG_LEN + MAX_MSG_EXTRA + dtlsExtra;
+    ret = CheckAvailableSize(ssl, outputSz);
+    if (ret != 0)
+        return ret;
+
+    if (ssl->buffers.outputBuffer.buffer == NULL)
+        return BUFFER_E;
+
+    input[0] = WOLFSSL_RRC_MSG_PATH_RESPONSE;
+    XMEMCPY(input + 1, cookie, WOLFSSL_RRC_MSG_LEN - 1);
+
+    output = GetOutputBuffer(ssl);
+    sendSz = BuildMessage(ssl, output, outputSz, input, WOLFSSL_RRC_MSG_LEN,
+        return_routability_check, 0, 0, 0, CUR_ORDER);
+    if (sendSz < 0)
+        return BUILD_MSG_ERROR;
+
+    ssl->buffers.outputBuffer.length += (word32)sendSz;
+    return SendBuffered(ssl);
+}
+#endif /* WOLFSSL_DTLS_CID_RRC */
+
 static int DoDecrypt(WOLFSSL *ssl)
 {
     int ret;
@@ -23505,6 +23556,42 @@ default:
                             return ret;
                     }
                     break;
+
+#ifdef WOLFSSL_DTLS_CID_RRC
+                case return_routability_check:
+                {
+                    word32 msgSz = ssl->curSize;
+                    word32 idx = ssl->buffers.inputBuffer.idx;
+                    byte rrcType;
+
+                    WOLFSSL_MSG("got RRC");
+
+                    if (IsEncryptionOn(ssl, 0) && ssl->options.handShakeDone) {
+                        if (msgSz < ssl->keys.padSz)
+                            return LENGTH_ERROR;
+                        msgSz -= ssl->keys.padSz;
+                    }
+
+                    if (msgSz < 1)
+                        return LENGTH_ERROR;
+
+                    rrcType = ssl->buffers.inputBuffer.buffer[idx];
+                    if (ssl->options.dtlsCidRrcNegotiated &&
+                            msgSz == WOLFSSL_RRC_MSG_LEN &&
+                            rrcType == WOLFSSL_RRC_MSG_PATH_CHALLENGE) {
+                        WOLFSSL_MSG("RRC path_challenge received");
+                        ret = SendRrcPathResponse(ssl,
+                            ssl->buffers.inputBuffer.buffer + idx + 1);
+                        if (ret != 0)
+                            return ret;
+                    }
+
+                    ssl->buffers.inputBuffer.idx += msgSz;
+                    if (IsEncryptionOn(ssl, 0) && ssl->options.handShakeDone)
+                        ssl->buffers.inputBuffer.idx += ssl->keys.padSz;
+                    break;
+                }
+#endif /* WOLFSSL_DTLS_CID_RRC */
 
                 case alert:
                     WOLFSSL_MSG("got ALERT!");
@@ -38232,6 +38319,9 @@ static int AddPSKtoPreMasterSecret(WOLFSSL* ssl)
         if (ssl->options.useDtlsCID)
             DtlsCIDOnExtensionsParsed(ssl);
 #endif /* WOLFSSL_DTLS_CID */
+#ifdef WOLFSSL_DTLS_CID_RRC
+        DtlsRRCOnExtensionsParsed(ssl);
+#endif /* WOLFSSL_DTLS_CID_RRC */
 
         ssl->options.clientState   = CLIENT_HELLO_COMPLETE;
         ssl->options.haveSessionId = 1;

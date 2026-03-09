@@ -2971,6 +2971,7 @@ typedef struct Options Options;
 #define TLSXT_SIGNATURE_ALGORITHMS_CERT  0x0032
 #define TLSXT_KEY_SHARE                  0x0033
 #define TLSXT_CONNECTION_ID              0x0036
+#define TLSXT_RRC                        0x003d
 #define TLSXT_KEY_QUIC_TP_PARAMS         0x0039 /* RFC 9001, ch. 8.2 */
 #define TLSXT_ECH                        0xfe0d /* from */
                                                 /* draft-ietf-tls-esni-13 */
@@ -3028,6 +3029,9 @@ typedef enum {
     #if defined(WOLFSSL_DTLS_CID)
     TLSX_CONNECTION_ID              = TLSXT_CONNECTION_ID,
     #endif /* defined(WOLFSSL_DTLS_CID) */
+    #if defined(WOLFSSL_DTLS_CID_RRC)
+    TLSX_RRC                        = TLSXT_RRC,
+    #endif /* defined(WOLFSSL_DTLS_CID_RRC) */
     #ifdef WOLFSSL_QUIC
     TLSX_KEY_QUIC_TP_PARAMS         = TLSXT_KEY_QUIC_TP_PARAMS,
     #endif
@@ -3787,6 +3791,12 @@ WOLFSSL_LOCAL byte DtlsCIDCheck(WOLFSSL* ssl, const byte* input,
     word16 inputSize);
 WOLFSSL_LOCAL int Dtls13UnifiedHeaderCIDPresent(byte flags);
 #endif /* WOLFSSL_DTLS_CID */
+#ifdef WOLFSSL_DTLS_CID_RRC
+WOLFSSL_LOCAL int TLSX_RRC_Use(WOLFSSL* ssl);
+WOLFSSL_LOCAL int TLSX_RRC_Parse(WOLFSSL* ssl, const byte* input,
+    word16 length, byte isRequest);
+WOLFSSL_LOCAL void DtlsRRCOnExtensionsParsed(WOLFSSL* ssl);
+#endif /* WOLFSSL_DTLS_CID_RRC */
 WOLFSSL_LOCAL byte DtlsGetCidTxSize(WOLFSSL* ssl);
 WOLFSSL_LOCAL byte DtlsGetCidRxSize(WOLFSSL* ssl);
 
@@ -5148,6 +5158,10 @@ struct Options {
 #ifdef WOLFSSL_DTLS_CID
     word16            useDtlsCID:1;
 #endif /* WOLFSSL_DTLS_CID */
+#ifdef WOLFSSL_DTLS_CID_RRC
+    word16            useDtlsCIDRRC:1;       /* Offer/accept RRC extension */
+    word16            dtlsCidRrcNegotiated:1;/* RRC extension negotiated */
+#endif /* WOLFSSL_DTLS_CID_RRC */
 #if defined(WOLFSSL_TLS13) && defined(HAVE_ECH)
     word16            useEch:1;
     word16            echAccepted:1;
@@ -6549,6 +6563,9 @@ enum ContentType {
     handshake          = 22,
     application_data   = 23,
     dtls12_cid         = 25,
+#ifdef WOLFSSL_DTLS_CID_RRC
+    return_routability_check = 27,
+#endif /* WOLFSSL_DTLS_CID_RRC */
 #ifdef WOLFSSL_DTLS13
     ack                = 26,
 #endif /* WOLFSSL_DTLS13 */

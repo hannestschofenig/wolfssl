@@ -12576,6 +12576,12 @@ static int TLSX_QuicTP_Parse(WOLFSSL *ssl, const byte *input, size_t len, int ex
 #define CID_FREE(a, b) 0
 #endif /* defined(WOLFSSL_DTLS_CID) */
 
+#if defined(WOLFSSL_DTLS_CID_RRC)
+#define RRC_PARSE TLSX_RRC_Parse
+#else
+#define RRC_PARSE(a, b, c, d) 0
+#endif /* defined(WOLFSSL_DTLS_CID_RRC) */
+
 #if defined(HAVE_RPK)
 /******************************************************************************/
 /* Client_Certificate_Type extension                                          */
@@ -16821,6 +16827,16 @@ int TLSX_Parse(WOLFSSL* ssl, const byte* input, word16 length, byte msgType,
                 break;
 
 #endif /* defined(WOLFSSL_DTLS_CID) */
+#if defined(WOLFSSL_DTLS_CID_RRC)
+            case TLSX_RRC:
+                if (msgType != client_hello && msgType != server_hello)
+                    return EXT_NOT_ALLOWED;
+
+                WOLFSSL_MSG("RRC extension received");
+                ret = RRC_PARSE(ssl, input + offset, size, isRequest);
+                break;
+
+#endif /* defined(WOLFSSL_DTLS_CID_RRC) */
 #if defined(HAVE_RPK)
             case TLSX_CLIENT_CERTIFICATE_TYPE:
                 WOLFSSL_MSG("Client Certificate Type extension received");
