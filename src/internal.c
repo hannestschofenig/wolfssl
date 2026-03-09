@@ -7865,6 +7865,12 @@ int InitSSL(WOLFSSL* ssl, WOLFSSL_CTX* ctx, int writeDup)
 #ifdef HAVE_MAX_FRAGMENT
     ssl->max_fragment = MAX_RECORD_SIZE;
 #endif
+#ifdef WOLFSSL_TLS13
+    ssl->largeRecordSizeLimit = ctx->largeRecordSizeLimit;
+    ssl->largeRecordSizeLimitPeer = 0;
+    ssl->options.largeRecordSz = 0;
+    ssl->tls13AADSz = 0;
+#endif
 #ifdef HAVE_ALPN
     ssl->alpn_peer_requested = NULL;
     ssl->alpn_peer_requested_length = 0;
@@ -12120,6 +12126,67 @@ static int GetDtlsRecordHeader(WOLFSSL* ssl, word32* inOutIdx,
 #endif /* WOLFSSL_DTLS */
 
 /* do all verify and sanity checks on record header */
+static WC_INLINE byte Tls13LargeRecVarIntLen(byte first)
+{
+    switch ((first >> 6) & 0x03) {
+        case 0: return 1;
+        case 1: return 2;
+        case 2: return 4;
+        default: return 0;
+    }
+}
+
+static int Tls13LargeRecVarIntDecode(const byte* input, byte len, word32* value)
+{
+    word32 v = 0;
+    byte prefix;
+
+    if (input == NULL || value == NULL || (len != 1 && len != 2 && len != 4))
+        return BAD_FUNC_ARG;
+
+    prefix = (byte)(input[0] >> 6);
+    if ((prefix == 0 && len != 1) || (prefix == 1 && len != 2) ||
+        (prefix == 2 && len != 4) || prefix == 3) {
+        return BAD_FUNC_ARG;
+    }
+
+    if (len == 1) {
+        v = input[0] & 0x3f;
+    }
+    else if (len == 2) {
+        v = (word32)(((word32)(input[0] & 0x3f) << 8) | input[1]);
+        if (v < 64)
+            return BAD_FUNC_ARG;
+    }
+    else {
+        v = ((word32)(input[0] & 0x3f) << 24) |
+            ((word32)input[1] << 16) |
+            ((word32)input[2] << 8) |
+            input[3];
+        if (v < 16384)
+            return BAD_FUNC_ARG;
+    }
+
+    *value = v;
+    return 0;
+}
+
+static WC_INLINE int Tls13UseLargeRecordHeaderIn(const WOLFSSL* ssl)
+{
+#ifdef WOLFSSL_TLS13
+    if (ssl == NULL || ssl->options.dtls || !ssl->options.tls1_3)
+        return 0;
+    if (!ssl->options.handShakeDone || !ssl->keys.encryptionOn)
+        return 0;
+    if (!ssl->options.largeRecordSz)
+        return 0;
+    return 1;
+#else
+    (void)ssl;
+    return 0;
+#endif
+}
+
 static int GetRecordHeader(WOLFSSL* ssl, word32* inOutIdx,
                            RecordLayerHeader* rh, word16 *size)
 {
@@ -12137,15 +12204,45 @@ static int GetRecordHeader(WOLFSSL* ssl, word32* inOutIdx,
             ssl->fuzzerCb(ssl, ssl->buffers.inputBuffer.buffer + *inOutIdx,
                           RECORD_HEADER_SZ, FUZZ_HEAD, ssl->fuzzerCtx);
 #endif
-        /* Set explicitly rather than make assumptions on struct layout */
-        rh->type      = ssl->buffers.inputBuffer.buffer[*inOutIdx];
-        rh->pvMajor   = ssl->buffers.inputBuffer.buffer[*inOutIdx + 1];
-        rh->pvMinor   = ssl->buffers.inputBuffer.buffer[*inOutIdx + 2];
-        rh->length[0] = ssl->buffers.inputBuffer.buffer[*inOutIdx + 3];
-        rh->length[1] = ssl->buffers.inputBuffer.buffer[*inOutIdx + 4];
+        if (Tls13UseLargeRecordHeaderIn(ssl)) {
+            const byte* in = ssl->buffers.inputBuffer.buffer + *inOutIdx;
+            byte lenSz = Tls13LargeRecVarIntLen(in[1]);
+            word32 recSz = 0;
 
-        *inOutIdx += RECORD_HEADER_SZ;
-        ato16(rh->length, size);
+            if (lenSz == 0 || (*inOutIdx + 1 + lenSz) > ssl->buffers.inputBuffer.length)
+                return LENGTH_ERROR;
+            if (Tls13LargeRecVarIntDecode(in + 1, lenSz, &recSz) != 0)
+                return LENGTH_ERROR;
+            if (recSz > 0xFFFFU)
+                return LENGTH_ERROR;
+
+            rh->type      = in[0];
+            rh->pvMajor   = ssl->version.major;
+            rh->pvMinor   = TLSv1_2_MINOR;
+            c16toa((word16)recSz, rh->length);
+            *size = (word16)recSz;
+
+            ssl->tls13AAD[0] = rh->type;
+            XMEMCPY(ssl->tls13AAD + 1, in + 1, lenSz);
+            ssl->tls13AADSz = (byte)(1 + lenSz);
+
+            *inOutIdx += (word32)(1 + lenSz);
+        }
+        else {
+            /* Set explicitly rather than make assumptions on struct layout */
+            rh->type      = ssl->buffers.inputBuffer.buffer[*inOutIdx];
+            rh->pvMajor   = ssl->buffers.inputBuffer.buffer[*inOutIdx + 1];
+            rh->pvMinor   = ssl->buffers.inputBuffer.buffer[*inOutIdx + 2];
+            rh->length[0] = ssl->buffers.inputBuffer.buffer[*inOutIdx + 3];
+            rh->length[1] = ssl->buffers.inputBuffer.buffer[*inOutIdx + 4];
+
+            *inOutIdx += RECORD_HEADER_SZ;
+            ato16(rh->length, size);
+
+            XMEMCPY(ssl->tls13AAD, ssl->buffers.inputBuffer.buffer + *inOutIdx - RECORD_HEADER_SZ,
+                RECORD_HEADER_SZ);
+            ssl->tls13AADSz = RECORD_HEADER_SZ;
+        }
     }
     else {
 #ifdef WOLFSSL_DTLS
@@ -12232,14 +12329,22 @@ static int GetRecordHeader(WOLFSSL* ssl, word32* inOutIdx,
 
     /* record layer length check */
 #ifdef HAVE_MAX_FRAGMENT
-    if (*size > (ssl->max_fragment + MAX_COMP_EXTRA + MAX_MSG_EXTRA)) {
-        WOLFSSL_ERROR_VERBOSE(LENGTH_ERROR);
-        return LENGTH_ERROR;
+    {
+        word32 maxRecordWire = (word32)ssl->max_fragment + MAX_COMP_EXTRA +
+            MAX_MSG_EXTRA;
+        if (maxRecordWire <= 0xFFFFU && (word32)*size > maxRecordWire) {
+            WOLFSSL_ERROR_VERBOSE(LENGTH_ERROR);
+            return LENGTH_ERROR;
+        }
     }
 #else
-    if (*size > (MAX_RECORD_SIZE + MAX_COMP_EXTRA + MAX_MSG_EXTRA)) {
-        WOLFSSL_ERROR_VERBOSE(LENGTH_ERROR);
-        return LENGTH_ERROR;
+    {
+        word32 maxRecordWire = (word32)MAX_RECORD_SIZE + MAX_COMP_EXTRA +
+            MAX_MSG_EXTRA;
+        if (maxRecordWire <= 0xFFFFU && (word32)*size > maxRecordWire) {
+            WOLFSSL_ERROR_VERBOSE(LENGTH_ERROR);
+            return LENGTH_ERROR;
+        }
     }
 #endif
 
@@ -22553,7 +22658,12 @@ static int DoDecrypt(WOLFSSL *ssl)
                 aad = ssl->dtls13CurRL;
                 aad_size = ssl->dtls13CurRlLength;
             }
+            else
         #endif /* WOLFSSL_DTLS13 */
+            {
+                aad = ssl->tls13AAD;
+                aad_size = ssl->tls13AADSz;
+            }
             /* Don't send an alert for DTLS. We will just drop it
                 * silently later. */
             ret = DecryptTls13(ssl,
@@ -22870,9 +22980,18 @@ default:
 
 #ifdef WOLFSSL_TLS13
                 if (IsAtLeastTLSv1_3(ssl->version)) {
-                    tooLong  = ssl->curSize > MAX_TLS13_ENC_SZ;
-                    tooLong |= ssl->curSize - ssl->specs.aead_mac_size >
-                                                             MAX_TLS13_PLAIN_SZ;
+                    if (!ssl->options.largeRecordSz) {
+                        tooLong  = ssl->curSize > ((1 << 14) + 256);
+                        tooLong |= ssl->curSize - ssl->specs.aead_mac_size >
+                            ((1 << 14) + 1);
+                    }
+                    if (ssl->options.largeRecordSz &&
+                        ssl->largeRecordSizeLimit >=
+                            WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN) {
+                        word32 maxEnc = ssl->largeRecordSizeLimit +
+                            ssl->specs.aead_mac_size;
+                        tooLong |= ssl->curSize > maxEnc;
+                    }
                 }
 #endif
 #ifdef WOLFSSL_EXTRA_ALERTS
@@ -41864,6 +41983,14 @@ int wolfSSL_GetMaxFragSize(WOLFSSL* ssl)
         maxFragment = ssl->max_fragment;
     }
 #endif /* HAVE_MAX_FRAGMENT */
+#ifdef WOLFSSL_TLS13
+    if (ssl->options.tls1_3 && ssl->options.largeRecordSz &&
+        ssl->largeRecordSizeLimitPeer > 1) {
+        int peerLimit = (int)ssl->largeRecordSizeLimitPeer - 1;
+        if (peerLimit < maxFragment)
+            maxFragment = peerLimit;
+    }
+#endif
 
     return maxFragment;
 }

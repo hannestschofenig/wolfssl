@@ -2648,6 +2648,10 @@ WOLFSSL_API int wolfSSL_set_tlsext_max_fragment_length
                                                 (WOLFSSL *s, unsigned char mode);
 WOLFSSL_API int wolfSSL_CTX_set_tlsext_max_fragment_length
                                         (WOLFSSL_CTX *c, unsigned char mode);
+WOLFSSL_API int wolfSSL_set_tlsext_large_record_size_limit
+                                                (WOLFSSL *s, unsigned int limit);
+WOLFSSL_API int wolfSSL_CTX_set_tlsext_large_record_size_limit
+                                        (WOLFSSL_CTX *c, unsigned int limit);
 WOLFSSL_API void wolfSSL_CONF_modules_unload(int all);
 WOLFSSL_API char* wolfSSL_CONF_get1_default_config_file(void);
 WOLFSSL_API long wolfSSL_get_tlsext_status_exts(WOLFSSL *s, void *arg);
@@ -4610,6 +4614,18 @@ WOLFSSL_API int wolfSSL_CTX_UseMaxFragment(WOLFSSL_CTX* ctx, unsigned char mfl);
 #endif
 #endif /* HAVE_MAX_FRAGMENT */
 
+#ifdef WOLFSSL_TLS13
+enum {
+    WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN = 64,
+    WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MAX = 1073741568U
+};
+
+WOLFSSL_API int wolfSSL_UseLargeRecordSizeLimit(WOLFSSL* ssl,
+    unsigned int limit);
+WOLFSSL_API int wolfSSL_CTX_UseLargeRecordSizeLimit(WOLFSSL_CTX* ctx,
+    unsigned int limit);
+#endif
+
 /* Truncated HMAC */
 #ifdef HAVE_TRUNCATED_HMAC
 #ifndef NO_WOLFSSL_CLIENT
@@ -6355,6 +6371,12 @@ WOLFSSL_API const unsigned char* wolfSSL_dtls_cid_parse(const unsigned char* msg
 #endif
 #ifndef WOLFSSL_MFL_MIN_SIZE_SERVER
     #define WOLFSSL_MFL_MIN_SIZE_SERVER   1
+#endif
+#ifndef WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN_SIZE_CLIENT
+    #define WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN_SIZE_CLIENT 4
+#endif
+#ifndef WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN_SIZE_SERVER
+    #define WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN_SIZE_SERVER 4
 #endif
 #ifndef WOLFSSL_CKE_MIN_SIZE_CLIENT
     #define WOLFSSL_CKE_MIN_SIZE_CLIENT   3

@@ -2286,6 +2286,45 @@ static void AddTls13RecordHeader(byte* output, word32 length, byte type,
     c16toa((word16)length, rl->length);
 }
 
+static WC_INLINE int Tls13UseLargeRecordHeaderOut(const WOLFSSL* ssl)
+{
+    if (ssl == NULL || ssl->options.dtls || !ssl->options.tls1_3)
+        return 0;
+    if (!ssl->options.handShakeDone || !ssl->keys.encryptionOn)
+        return 0;
+    if (!ssl->options.largeRecordSz)
+        return 0;
+    return 1;
+}
+
+static int Tls13LargeRecVarIntEncode(word32 value, byte* out, byte* outSz)
+{
+    if (out == NULL || outSz == NULL)
+        return BAD_FUNC_ARG;
+
+    if (value <= 63) {
+        out[0] = (byte)value;
+        *outSz = 1;
+        return 0;
+    }
+    if (value <= 16383) {
+        out[0] = (byte)(0x40 | ((value >> 8) & 0x3f));
+        out[1] = (byte)(value & 0xff);
+        *outSz = 2;
+        return 0;
+    }
+    if (value <= 1073741823U) {
+        out[0] = (byte)(0x80 | ((value >> 24) & 0x3f));
+        out[1] = (byte)((value >> 16) & 0xff);
+        out[2] = (byte)((value >> 8) & 0xff);
+        out[3] = (byte)(value & 0xff);
+        *outSz = 4;
+        return 0;
+    }
+
+    return BAD_FUNC_ARG;
+}
+
 /* Add handshake header to message.
  *
  * output      The buffer to write the handshake header into.
@@ -3199,6 +3238,9 @@ typedef struct BuildMsg13Args {
     word32 headerSz;
     word16 size;
     word32 paddingSz;
+    byte   useLargeHeader;
+    byte   largeHeader[RECORD_HEADER_SZ];
+    byte   largeHeaderSz;
 } BuildMsg13Args;
 
 static void FreeBuildMsg13Args(WOLFSSL* ssl, void* pArgs)
@@ -3322,6 +3364,17 @@ int BuildTls13Message(WOLFSSL* ssl, byte* output, int outSz, const byte* input,
 
             /* Record data length. */
             args->size = (word16)(args->sz - args->headerSz);
+            args->useLargeHeader = (byte)Tls13UseLargeRecordHeaderOut(ssl);
+            args->largeHeaderSz = 0;
+            if (args->useLargeHeader) {
+                byte encSz = 0;
+                int encRet = Tls13LargeRecVarIntEncode(args->size,
+                    args->largeHeader + 1, &encSz);
+                if (encRet != 0)
+                    return encRet;
+                args->largeHeader[0] = application_data;
+                args->largeHeaderSz = (byte)(encSz + 1);
+            }
             /* Write/update the record header with the new size.
              * Always have the content type as application data for encrypted
              * messages in TLS v1.3.
@@ -3388,9 +3441,14 @@ int BuildTls13Message(WOLFSSL* ssl, byte* output, int outSz, const byte* input,
         #endif
             {
                 const byte* aad = output;
+                word16 aadSz = (word16)args->headerSz;
+                if (args->useLargeHeader) {
+                    aad = args->largeHeader;
+                    aadSz = args->largeHeaderSz;
+                }
                 output += args->headerSz;
-                ret = EncryptTls13(ssl, output, output, args->size, aad,
-                                   (word16)args->headerSz, asyncOkay);
+                ret = EncryptTls13(ssl, output, output, args->size, aad, aadSz,
+                    asyncOkay);
                 if (ret != 0) {
                 #ifdef WOLFSSL_ASYNC_CRYPT
                     if (ret != WC_NO_ERR_TRACE(WC_PENDING_E))
@@ -3407,6 +3465,13 @@ int BuildTls13Message(WOLFSSL* ssl, byte* output, int outSz, const byte* input,
                                                     (word16)args->sz);
                 }
 #endif /* WOLFSSL_DTLS13 */
+                if (ret == 0 && args->useLargeHeader) {
+                    XMEMMOVE((byte*)output - args->headerSz + args->largeHeaderSz,
+                        (byte*)output, args->size);
+                    XMEMCPY((byte*)output - args->headerSz, args->largeHeader,
+                        args->largeHeaderSz);
+                    args->sz -= (args->headerSz - args->largeHeaderSz);
+                }
             }
             break;
         }

@@ -2909,6 +2909,64 @@ int wolfSSL_CTX_UseMaxFragment(WOLFSSL_CTX* ctx, byte mfl)
 #endif /* NO_WOLFSSL_CLIENT */
 #endif /* HAVE_MAX_FRAGMENT */
 
+#ifdef WOLFSSL_TLS13
+int wolfSSL_UseLargeRecordSizeLimit(WOLFSSL* ssl, unsigned int limit)
+{
+    if (ssl == NULL)
+        return BAD_FUNC_ARG;
+
+    if (limit != 0 &&
+        (limit < WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN ||
+         limit > WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MAX)) {
+        return BAD_FUNC_ARG;
+    }
+
+    ssl->largeRecordSizeLimit = (word32)limit;
+
+    if (limit == 0) {
+        ssl->options.largeRecordSz = 0;
+        ssl->largeRecordSizeLimitPeer = 0;
+        TLSX_Remove(&ssl->extensions, TLSX_LARGE_RECORD_SIZE_LIMIT, ssl->heap);
+        return WOLFSSL_SUCCESS;
+    }
+
+    {
+        int ret = TLSX_UseLargeRecordSizeLimit(&ssl->extensions, (word32)limit,
+            ssl->heap);
+        if (ret == 0)
+            return WOLFSSL_SUCCESS;
+        return ret;
+    }
+}
+
+int wolfSSL_CTX_UseLargeRecordSizeLimit(WOLFSSL_CTX* ctx, unsigned int limit)
+{
+    if (ctx == NULL)
+        return BAD_FUNC_ARG;
+
+    if (limit != 0 &&
+        (limit < WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN ||
+         limit > WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MAX)) {
+        return BAD_FUNC_ARG;
+    }
+
+    ctx->largeRecordSizeLimit = (word32)limit;
+
+    if (limit == 0) {
+        TLSX_Remove(&ctx->extensions, TLSX_LARGE_RECORD_SIZE_LIMIT, ctx->heap);
+        return WOLFSSL_SUCCESS;
+    }
+
+    {
+        int ret = TLSX_UseLargeRecordSizeLimit(&ctx->extensions, (word32)limit,
+            ctx->heap);
+        if (ret == 0)
+            return WOLFSSL_SUCCESS;
+        return ret;
+    }
+}
+#endif /* WOLFSSL_TLS13 */
+
 #ifdef HAVE_TRUNCATED_HMAC
 #ifndef NO_WOLFSSL_CLIENT
 
@@ -12462,6 +12520,19 @@ int wolfSSL_set_tlsext_max_fragment_length(WOLFSSL *s, unsigned char mode)
 }
 #endif /* !NO_WOLFSSL_CLIENT && !NO_TLS */
 #endif /* HAVE_MAX_FRAGMENT */
+
+#ifdef WOLFSSL_TLS13
+int wolfSSL_CTX_set_tlsext_large_record_size_limit(WOLFSSL_CTX* c,
+    unsigned int limit)
+{
+    return wolfSSL_CTX_UseLargeRecordSizeLimit(c, limit);
+}
+
+int wolfSSL_set_tlsext_large_record_size_limit(WOLFSSL* s, unsigned int limit)
+{
+    return wolfSSL_UseLargeRecordSizeLimit(s, limit);
+}
+#endif /* WOLFSSL_TLS13 */
 
 #endif /* OPENSSL_EXTRA */
 

@@ -1466,6 +1466,10 @@ static WC_INLINE word16 TLSX_ToSemaphore(word16 type)
         case TLSX_CKS:
             return 66;
 #endif
+#ifdef WOLFSSL_TLS13
+        case TLSX_LARGE_RECORD_SIZE_LIMIT:
+            return 67;
+#endif
         default:
             if (type > 62) {
                 /* This message SHOULD only happens during the adding of
@@ -3127,6 +3131,119 @@ int TLSX_UseMaxFragment(TLSX** extensions, byte mfl, void* heap)
 #define MFL_PARSE(a, b, c, d) 0
 
 #endif /* HAVE_MAX_FRAGMENT */
+
+/******************************************************************************/
+/* Large Record Size Limit (TLS 1.3)                                         */
+/******************************************************************************/
+
+#ifdef WOLFSSL_TLS13
+
+static int TLSX_LargeRecordSizeLimit_GetSize(word32 limit, byte msgType,
+                                             word16* pSz)
+{
+    (void)limit;
+
+    if (msgType == client_hello || msgType == encrypted_extensions) {
+        *pSz += OPAQUE32_LEN;
+        return 0;
+    }
+
+    WOLFSSL_ERROR_VERBOSE(SANITY_MSG_E);
+    return SANITY_MSG_E;
+}
+
+static int TLSX_LargeRecordSizeLimit_Write(word32 limit, byte* output,
+                                           byte msgType, word16* pSz)
+{
+    if (msgType == client_hello || msgType == encrypted_extensions) {
+        c32toa(limit, output);
+        *pSz += OPAQUE32_LEN;
+        return 0;
+    }
+
+    WOLFSSL_ERROR_VERBOSE(SANITY_MSG_E);
+    return SANITY_MSG_E;
+}
+
+int TLSX_UseLargeRecordSizeLimit(TLSX** extensions, word32 limit, void* heap)
+{
+    int ret = 0;
+    TLSX* extension;
+
+    if (extensions == NULL)
+        return BAD_FUNC_ARG;
+
+    if (limit < WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN ||
+        limit > WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MAX) {
+        return BAD_FUNC_ARG;
+    }
+
+    extension = TLSX_Find(*extensions, TLSX_LARGE_RECORD_SIZE_LIMIT);
+    if (extension == NULL) {
+        ret = TLSX_Push(extensions, TLSX_LARGE_RECORD_SIZE_LIMIT, NULL, heap);
+        if (ret != 0)
+            return ret;
+        extension = TLSX_Find(*extensions, TLSX_LARGE_RECORD_SIZE_LIMIT);
+        if (extension == NULL)
+            return MEMORY_E;
+    }
+
+    extension->val = limit;
+    return 0;
+}
+
+static int TLSX_LargeRecordSizeLimit_Parse(WOLFSSL* ssl, const byte* input,
+                                           word16 length, byte isRequest)
+{
+    word32 limit;
+
+    if (ssl == NULL || input == NULL || length != OPAQUE32_LEN)
+        return BUFFER_ERROR;
+
+    ato32(input, &limit);
+    if (limit < WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN ||
+        limit > WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MAX) {
+        SendAlert(ssl, alert_fatal, illegal_parameter);
+        WOLFSSL_ERROR_VERBOSE(BUFFER_ERROR);
+        return BUFFER_ERROR;
+    }
+
+    ssl->largeRecordSizeLimitPeer = limit;
+
+#ifndef NO_WOLFSSL_SERVER
+    if (isRequest) {
+        if (ssl->largeRecordSizeLimit >= WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN &&
+            ssl->largeRecordSizeLimit <= WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MAX) {
+            int ret = TLSX_UseLargeRecordSizeLimit(&ssl->extensions,
+                ssl->largeRecordSizeLimit, ssl->heap);
+            if (ret != 0)
+                return ret;
+            TLSX_SetResponse(ssl, TLSX_LARGE_RECORD_SIZE_LIMIT);
+            ssl->options.largeRecordSz = 1;
+        }
+        return 0;
+    }
+#endif
+
+    if (ssl->largeRecordSizeLimit >= WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN &&
+        ssl->largeRecordSizeLimit <= WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MAX) {
+        ssl->options.largeRecordSz = 1;
+    }
+
+    return 0;
+}
+
+#define LRSL_GET_SIZE  TLSX_LargeRecordSizeLimit_GetSize
+#define LRSL_WRITE     TLSX_LargeRecordSizeLimit_Write
+#define LRSL_PARSE     TLSX_LargeRecordSizeLimit_Parse
+
+#else
+
+#define LRSL_GET_SIZE(a, b, c) 0
+#define LRSL_WRITE(a, b, c, d) 0
+#define LRSL_PARSE(a, b, c, d) 0
+
+#endif /* WOLFSSL_TLS13 */
 
 /******************************************************************************/
 /* Truncated HMAC                                                             */
@@ -13801,6 +13918,11 @@ void TLSX_FreeAll(TLSX* list, void* heap)
                 WOLFSSL_MSG("Max Fragment Length extension free");
                 MFL_FREE_ALL(extension->data, heap);
                 break;
+#ifdef WOLFSSL_TLS13
+            case TLSX_LARGE_RECORD_SIZE_LIMIT:
+                WOLFSSL_MSG("Large Record Size Limit extension free");
+                break;
+#endif
 
             case TLSX_EXTENDED_MASTER_SECRET:
                 WOLFSSL_MSG("Extended Master Secret free");
@@ -14008,6 +14130,11 @@ static int TLSX_GetSize(TLSX* list, byte* semaphore, byte msgType,
             case TLSX_MAX_FRAGMENT_LENGTH:
                 length += MFL_GET_SIZE(extension->data);
                 break;
+#ifdef WOLFSSL_TLS13
+            case TLSX_LARGE_RECORD_SIZE_LIMIT:
+                ret = LRSL_GET_SIZE((word32)extension->val, msgType, &length);
+                break;
+#endif
 
             case TLSX_EXTENDED_MASTER_SECRET:
             case TLSX_TRUNCATED_HMAC:
@@ -14212,6 +14339,13 @@ static int TLSX_Write(TLSX* list, byte* output, byte* semaphore,
                 WOLFSSL_MSG("Max Fragment Length extension to write");
                 offset += MFL_WRITE((byte*)extension->data, output + offset);
                 break;
+#ifdef WOLFSSL_TLS13
+            case TLSX_LARGE_RECORD_SIZE_LIMIT:
+                WOLFSSL_MSG("Large Record Size Limit extension to write");
+                ret = LRSL_WRITE((word32)extension->val, output + offset,
+                    msgType, &offset);
+                break;
+#endif
 
             case TLSX_EXTENDED_MASTER_SECRET:
                 WOLFSSL_MSG("Extended Master Secret");
@@ -16079,6 +16213,8 @@ static word16 TLSX_GetMinSize_Client(word16* type)
             return WOLFSSL_EDI_MIN_SIZE_CLIENT;
         case TLSXT_MAX_FRAGMENT_LENGTH:
             return WOLFSSL_MFL_MIN_SIZE_CLIENT;
+        case TLSXT_LARGE_RECORD_SIZE_LIMIT:
+            return WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN_SIZE_CLIENT;
         case TLSXT_TRUSTED_CA_KEYS:
             return WOLFSSL_TCA_MIN_SIZE_CLIENT;
         case TLSXT_TRUNCATED_HMAC:
@@ -16148,6 +16284,8 @@ static word16 TLSX_GetMinSize_Server(const word16 *type)
             return WOLFSSL_EDI_MIN_SIZE_SERVER;
         case TLSXT_MAX_FRAGMENT_LENGTH:
             return WOLFSSL_MFL_MIN_SIZE_SERVER;
+        case TLSXT_LARGE_RECORD_SIZE_LIMIT:
+            return WOLFSSL_LARGE_RECORD_SIZE_LIMIT_MIN_SIZE_SERVER;
         case TLSXT_TRUSTED_CA_KEYS:
             return WOLFSSL_TCA_MIN_SIZE_SERVER;
         case TLSXT_TRUNCATED_HMAC:
@@ -16256,6 +16394,9 @@ int TLSX_Parse(WOLFSSL* ssl, const byte* input, word16 length, byte msgType,
         #endif
         #if defined(WOLFSSL_TLS13) && defined(WOLFSSL_DUAL_ALG_CERTS)
             || (type == TLSX_CKS)
+        #endif
+        #ifdef WOLFSSL_TLS13
+            || (type == TLSX_LARGE_RECORD_SIZE_LIMIT)
         #endif
             )
         {
@@ -16366,6 +16507,20 @@ int TLSX_Parse(WOLFSSL* ssl, const byte* input, word16 length, byte msgType,
                 }
                 ret = MFL_PARSE(ssl, input + offset, size, isRequest);
                 break;
+
+#ifdef WOLFSSL_TLS13
+            case TLSX_LARGE_RECORD_SIZE_LIMIT:
+                WOLFSSL_MSG("Large Record Size Limit extension received");
+            #ifdef WOLFSSL_DEBUG_TLS
+                WOLFSSL_BUFFER(input + offset, size);
+            #endif
+                if (!IsAtLeastTLSv1_3(ssl->version))
+                    break;
+                if (msgType != client_hello && msgType != encrypted_extensions)
+                    return EXT_NOT_ALLOWED;
+                ret = LRSL_PARSE(ssl, input + offset, size, isRequest);
+                break;
+#endif
 
             case TLSX_TRUNCATED_HMAC:
                 WOLFSSL_MSG("Truncated HMAC extension received");

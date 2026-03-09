@@ -1536,8 +1536,15 @@ enum Misc {
     MAX_PLAINTEXT_SZ   = (1 << 14),        /* Max plaintext sz   */
     MAX_TLS_CIPHER_SZ  = (1 << 14) + 2048, /* Max TLS encrypted data sz */
 #ifdef WOLFSSL_TLS13
-    MAX_TLS13_PLAIN_SZ = (1 << 14) + 1,    /* Max unencrypted data sz */
-    MAX_TLS13_ENC_SZ   = (1 << 14) + 256,  /* Max encrypted data sz   */
+#ifndef WOLFSSL_MAX_RECORD_SIZE
+    WOLFSSL_MAX_RECORD_SIZE_CFG = 16384,
+#else
+    WOLFSSL_MAX_RECORD_SIZE_CFG = WOLFSSL_MAX_RECORD_SIZE,
+#endif
+    MAX_TLS13_PLAIN_SZ = WOLFSSL_MAX_RECORD_SIZE_CFG + 1,
+                                            /* Max TLS1.3 plaintext data sz */
+    MAX_TLS13_ENC_SZ   = WOLFSSL_MAX_RECORD_SIZE_CFG + 256,
+                                            /* Max TLS1.3 encrypted data sz  */
 #endif
     MAX_MSG_EXTRA   = 38 + WC_MAX_DIGEST_SIZE,
                                 /* max added to msg, mac + pad  from */
@@ -2302,8 +2309,19 @@ enum {
 #endif
 
 
-/* determine maximum record size */
-#define MAX_RECORD_SIZE 16384  /* 2^14, max size by standard */
+/* determine maximum record size
+ * Default is RFC 8446 classic limit (2^14), but this can be raised for
+ * large-record deployments (e.g., large_record_size_limit extension).
+ * The current record pipeline uses word16 lengths, so 65535 is the
+ * implementation ceiling without deeper refactors.
+ */
+#ifndef WOLFSSL_MAX_RECORD_SIZE
+    #define WOLFSSL_MAX_RECORD_SIZE 16384
+#endif
+#if WOLFSSL_MAX_RECORD_SIZE < 128 || WOLFSSL_MAX_RECORD_SIZE > 65535
+    #error Invalid WOLFSSL_MAX_RECORD_SIZE (allowed: 128..65535)
+#endif
+#define MAX_RECORD_SIZE WOLFSSL_MAX_RECORD_SIZE
 
 #ifdef RECORD_SIZE
     /* user supplied value */
@@ -2978,6 +2996,7 @@ typedef struct Options Options;
 #define TLSXT_KEY_SHARE                  0x0033
 #define TLSXT_CONNECTION_ID              0x0036
 #define TLSXT_KEY_QUIC_TP_PARAMS         0x0039 /* RFC 9001, ch. 8.2 */
+#define TLSXT_LARGE_RECORD_SIZE_LIMIT    0x0064 /* draft-ietf-tls-super-jumbo-record-limit */
 #define TLSXT_ECH                        0xfe0d /* from */
                                                 /* draft-ietf-tls-esni-13 */
 /* The 0xFF section is experimental/custom/personal use */
@@ -3036,6 +3055,7 @@ typedef enum {
     #if defined(WOLFSSL_DTLS_CID)
     TLSX_CONNECTION_ID              = TLSXT_CONNECTION_ID,
     #endif /* defined(WOLFSSL_DTLS_CID) */
+    TLSX_LARGE_RECORD_SIZE_LIMIT    = TLSXT_LARGE_RECORD_SIZE_LIMIT,
     #ifdef WOLFSSL_QUIC
     TLSX_KEY_QUIC_TP_PARAMS         = TLSXT_KEY_QUIC_TP_PARAMS,
     #endif
@@ -3287,6 +3307,11 @@ WOLFSSL_LOCAL int TLSX_ALPN_SetOptions(TLSX** extensions, byte option);
 WOLFSSL_LOCAL int TLSX_UseMaxFragment(TLSX** extensions, byte mfl, void* heap);
 
 #endif /* HAVE_MAX_FRAGMENT */
+
+#ifdef WOLFSSL_TLS13
+WOLFSSL_LOCAL int TLSX_UseLargeRecordSizeLimit(TLSX** extensions, word32 limit,
+    void* heap);
+#endif
 
 /** Truncated HMAC - RFC 6066 (session 7) */
 #ifdef HAVE_TRUNCATED_HMAC
@@ -4062,6 +4087,9 @@ struct WOLFSSL_CTX {
     int             devId;              /* async device id to use */
 #ifdef HAVE_TLS_EXTENSIONS
     TLSX* extensions;                  /* RFC 6066 TLS Extensions data */
+#ifdef WOLFSSL_TLS13
+    word32 largeRecordSizeLimit;      /* advertised local receive limit */
+#endif
     #ifndef NO_WOLFSSL_SERVER
         #if defined(HAVE_CERTIFICATE_STATUS_REQUEST) \
          || defined(HAVE_CERTIFICATE_STATUS_REQUEST_V2)
@@ -5103,6 +5131,7 @@ struct Options {
 #endif
 #ifdef WOLFSSL_TLS13
     word16            tls13MiddleBoxCompat:1; /* TLSv1.3 middlebox compatibility */
+    word16            largeRecordSz:1;        /* large record extension negotiated */
 #endif
 #ifdef WOLFSSL_DTLS_CID
     word16            useDtlsCID:1;
@@ -5966,6 +5995,10 @@ struct WOLFSSL {
     word32          curStartIdx;
     byte            verifyDepth;
     RecordLayerHeader curRL;
+#ifdef WOLFSSL_TLS13
+    byte            tls13AAD[RECORD_HEADER_SZ];
+    byte            tls13AADSz;
+#endif
     MsgsReceived    msgsReceived;       /* peer messages received */
     ProtocolVersion version;            /* negotiated version */
     ProtocolVersion chVersion;          /* client hello version */
@@ -6178,6 +6211,10 @@ struct WOLFSSL {
     #ifdef HAVE_MAX_FRAGMENT
         word16 max_fragment;
     #endif
+#ifdef WOLFSSL_TLS13
+    word32 largeRecordSizeLimit;      /* advertised local receive limit */
+    word32 largeRecordSizeLimitPeer;  /* peer-advertised receive limit */
+#endif
     #ifdef HAVE_TRUNCATED_HMAC
         byte truncated_hmac;
     #endif
