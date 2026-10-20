@@ -12213,7 +12213,8 @@ static int GetRecordHeader(WOLFSSL* ssl, word32* inOutIdx,
                 return LENGTH_ERROR;
             if (Tls13LargeRecVarIntDecode(in + 1, lenSz, &recSz) != 0)
                 return LENGTH_ERROR;
-            if (recSz > 0xFFFFU)
+            if (recSz > 0xFFFFU || recSz > ssl->largeRecordSizeLimit +
+                    ssl->specs.aead_mac_size)
                 return LENGTH_ERROR;
 
             rh->type      = in[0];
@@ -22766,7 +22767,7 @@ static int DoProcessReplyEx(WOLFSSL* ssl, int allowSocketErr)
          * old client hello */
         case doProcessInit:
 
-            readSz = RECORD_HEADER_SZ;
+            readSz = Tls13UseLargeRecordHeaderIn(ssl) ? 2 : RECORD_HEADER_SZ;
 
         #ifdef WOLFSSL_DTLS
             if (ssl->options.dtls) {
@@ -22784,6 +22785,17 @@ static int DoProcessReplyEx(WOLFSSL* ssl, int allowSocketErr)
             if (!ssl->options.dtls) {
                 if ((ret = GetInputData(ssl, (word32)readSz)) < 0)
                     return ret;
+                if (Tls13UseLargeRecordHeaderIn(ssl)) {
+                    byte lenSz = Tls13LargeRecVarIntLen(
+                        ssl->buffers.inputBuffer.buffer[
+                            ssl->buffers.inputBuffer.idx + 1]);
+                    if (lenSz == 0) {
+                        SendAlert(ssl, alert_fatal, record_overflow);
+                        return LENGTH_ERROR;
+                    }
+                    if ((ret = GetInputData(ssl, (word32)(1 + lenSz))) < 0)
+                        return ret;
+                }
             } else {
             #ifdef WOLFSSL_DTLS
                 /* read ahead may already have header */
@@ -22918,11 +22930,14 @@ static int DoProcessReplyEx(WOLFSSL* ssl, int allowSocketErr)
                         SendAlert(ssl, alert_fatal,
                             wolfssl_alert_protocol_version);
                     break;
-#ifdef HAVE_MAX_FRAGMENT
                 case WC_NO_ERR_TRACE(LENGTH_ERROR):
+#ifdef HAVE_MAX_FRAGMENT
                     SendAlert(ssl, alert_fatal, record_overflow);
+#elif defined(WOLFSSL_TLS13)
+                    if (Tls13UseLargeRecordHeaderIn(ssl))
+                        SendAlert(ssl, alert_fatal, record_overflow);
+#endif
                     break;
-#endif /* HAVE_MAX_FRAGMENT */
 default:
                     break;
                 }
